@@ -1,0 +1,124 @@
+
+name: Build FeatherFPS APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'FeatherFPS-by-Meadow-Source.zip'
+      - '.github/workflows/build-apk.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP_PATH="$GITHUB_WORKSPACE/FeatherFPS-by-Meadow-Source.zip"
+
+          if [[ ! -f "$ZIP_PATH" ]]; then
+            echo "ERROR: Source ZIP missing from repository root."
+            ls -la "$GITHUB_WORKSPACE"
+            exit 1
+          fi
+
+          unzip -t "$ZIP_PATH"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Install Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Extract ZIP and locate Android project
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST="$RUNNER_TEMP/featherfps-source"
+          mkdir -p "$DEST"
+
+          unzip -oq \
+            "$GITHUB_WORKSPACE/FeatherFPS-by-Meadow-Source.zip" \
+            -d "$DEST"
+
+          SETTINGS_FILE="$(find "$DEST" -type f \
+            \( -name settings.gradle \
+            -o -name settings.gradle.kts \) -print -quit)"
+
+          if [[ -z "$SETTINGS_FILE" ]]; then
+            echo "ERROR: Gradle settings file not found in ZIP."
+            find "$DEST" -maxdepth 5 -type f -print
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+
+          if [[ ! -f "$PROJECT_DIR/app/build.gradle" && \
+                ! -f "$PROJECT_DIR/app/build.gradle.kts" ]]; then
+            echo "ERROR: Android app Gradle file not found."
+            exit 1
+          fi
+
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Found project: $PROJECT_DIR"
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --stacktrace \
+            -p "${{ steps.project.outputs.dir }}" \
+            :app:assembleDebug
+
+      - name: Prepare APK artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT_DIR="${{ steps.project.outputs.dir }}"
+
+          APK_PATH="$(find \
+            "$PROJECT_DIR/app/build/outputs/apk/debug" \
+            -maxdepth 1 -type f -name '*.apk' -print -quit)"
+
+          if [[ -z "$APK_PATH" ]]; then
+            echo "ERROR: No debug APK was generated."
+            exit 1
+          fi
+
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          cp "$APK_PATH" \
+            "$GITHUB_WORKSPACE/artifacts/FeatherFPS-by-Meadow-debug.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: FeatherFPS-by-Meadow-APK
+          path: artifacts/FeatherFPS-by-Meadow-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+          
